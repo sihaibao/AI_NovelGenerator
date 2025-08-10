@@ -3,15 +3,15 @@
 import logging
 from typing import Optional
 from langchain_openai import ChatOpenAI, AzureChatOpenAI
-# from google import genai
 import google.generativeai as genai
-# from google.genai import types
-from google.generativeai import types
 from azure.ai.inference import ChatCompletionsClient
 from azure.core.credentials import AzureKeyCredential
 from azure.ai.inference.models import SystemMessage, UserMessage
 from openai import OpenAI
 import requests
+import os
+import socket
+import time
 
 
 def check_base_url(url: str) -> str:
@@ -32,6 +32,73 @@ def check_base_url(url: str) -> str:
         if '/v1' not in url:
             url = url.rstrip('/') + '/v1'
     return url
+
+def detect_and_setup_proxy():
+    """
+    检测并设置代理配置，主要针对Clash等代理工具
+    """
+    # 常见的代理端口配置
+    proxy_configs = [
+        {"http": "http://127.0.0.1:7890", "https": "http://127.0.0.1:7890"},  # Clash for Windows 默认HTTP代理
+        {"http": "socks5://127.0.0.1:7891", "https": "socks5://127.0.0.1:7891"},  # Clash for Windows 默认SOCKS5代理
+        {"http": "http://127.0.0.1:8080", "https": "http://127.0.0.1:8080"},  # 其他常见HTTP代理
+        {"http": "http://127.0.0.1:1080", "https": "http://127.0.0.1:1080"},  # 其他常见代理
+    ]
+    
+    # 检查系统环境变量中是否已经设置了代理
+    if os.environ.get('HTTP_PROXY') or os.environ.get('HTTPS_PROXY'):
+        logging.info("系统环境变量中已配置代理")
+        return True
+    
+    # 尝试检测可用的代理
+    for proxy_config in proxy_configs:
+        try:
+            # 解析代理地址和端口
+            import re
+            http_proxy = proxy_config["http"]
+            if "://" in http_proxy:
+                proxy_url = http_proxy.split("://")[1]
+            else:
+                proxy_url = http_proxy
+            
+            if ":" in proxy_url:
+                host, port = proxy_url.split(":")
+                port = int(port)
+                
+                # 检查端口是否开放
+                sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                sock.settimeout(1)
+                result = sock.connect_ex((host, port))
+                sock.close()
+                
+                if result == 0:
+                    # 端口开放，设置代理
+                    os.environ['HTTP_PROXY'] = proxy_config["http"]
+                    os.environ['HTTPS_PROXY'] = proxy_config["https"]
+                    os.environ['http_proxy'] = proxy_config["http"]  # 小写版本，某些库需要
+                    os.environ['https_proxy'] = proxy_config["https"]
+                    logging.info(f"成功检测并设置代理: {proxy_config['http']}")
+                    return True
+                    
+        except Exception as e:
+            logging.debug(f"检测代理 {proxy_config} 失败: {e}")
+            continue
+    
+    logging.warning("未检测到可用的代理配置，可能需要手动设置")
+    return False
+
+def test_google_connectivity():
+    """
+    测试能否访问Google服务
+    """
+    try:
+        import urllib.request
+        # 尝试访问Google AI的endpoint
+        response = urllib.request.urlopen('https://generativelanguage.googleapis.com', timeout=10)
+        return response.getcode() == 200
+    except Exception as e:
+        logging.debug(f"Google连接测试失败: {e}")
+        return False
 
 class BaseLLMAdapter:
     """
@@ -105,28 +172,79 @@ class GeminiAdapter(BaseLLMAdapter):
         self.model_name = model_name
         self.max_tokens = max_tokens
         self.temperature = temperature
-        # gemini超时时间是毫秒
-        self.timeout = timeout * 1000
-
-        self._client = genai.Client(api_key=self.api_key,http_options=types.HttpOptions(base_url=base_url,timeout=self.timeout))
+        self.timeout = timeout
+        
+        # 检测并设置代理（针对中国地区网络访问问题）
+        try:
+            # 首先测试直连
+            if not test_google_connectivity():
+                logging.info("直连Google服务失败，尝试检测并设置代理...")
+                proxy_detected = detect_and_setup_proxy()
+                if proxy_detected:
+                    # 等待一下让代理设置生效
+                    time.sleep(1)
+                    if test_google_connectivity():
+                        logging.info("✅ 代理设置成功，可以访问Google服务")
+                    else:
+                        logging.warning("⚠️ 代理已设置但仍无法访问Google服务，请检查代理配置")
+                else:
+                    logging.warning("⚠️ 未能自动检测到代理，如果在中国地区使用，请确保VPN/代理正常运行")
+            else:
+                logging.info("✅ 可以直接访问Google服务")
+        except Exception as e:
+            logging.warning(f"代理检测过程出错: {e}")
+        
+        # 配置API密钥
+        genai.configure(api_key=self.api_key)
+        
+        # 如果提供了base_url且不为空，则配置自定义endpoint
+        if base_url and base_url.strip():
+            # 设置环境变量来使用自定义endpoint
+            os.environ['GOOGLE_AI_STUDIO_API_ENDPOINT'] = base_url.strip()
+        
+        # 创建生成模型
+        self._model = genai.GenerativeModel(model_name=self.model_name)
 
     def invoke(self, prompt: str) -> str:
         try:
-            response = self._client.models.generate_content(
-                model = self.model_name,
-                contents = prompt,
-                config = types.GenerateContentConfig(
-                    max_output_tokens=self.max_tokens,
-                    temperature=self.temperature,
-                ),
+            # 创建生成配置
+            generation_config = genai.types.GenerationConfig(
+                max_output_tokens=self.max_tokens,
+                temperature=self.temperature,
             )
+            
+            # 生成内容
+            response = self._model.generate_content(
+                contents=prompt,
+                generation_config=generation_config,
+                request_options={"timeout": self.timeout} if self.timeout else None
+            )
+            
             if response and response.text:
                 return response.text
             else:
                 logging.warning("No text response from Gemini API.")
                 return ""
+                
         except Exception as e:
-            logging.error(f"Gemini API 调用失败: {e}")
+            error_msg = str(e)
+            
+            # 检查是否是网络连接问题
+            if any(keyword in error_msg.lower() for keyword in 
+                   ['connection', 'timeout', 'network', 'proxy', 'ssl', 'certificate']):
+                logging.error(f"Gemini API 网络连接失败: {e}")
+                logging.info("💡 如果您在中国地区，请确保:")
+                logging.info("   1. VPN/代理服务正常运行（如Clash for Windows）")
+                logging.info("   2. 代理端口7890(HTTP)或7891(SOCKS5)可访问")
+                logging.info("   3. 可以在浏览器中正常访问Google")
+                
+                # 尝试重新检测代理
+                if not test_google_connectivity():
+                    logging.info("🔄 正在重新尝试代理检测...")
+                    detect_and_setup_proxy()
+            else:
+                logging.error(f"Gemini API 调用失败: {e}")
+            
             return ""
 
 class AzureOpenAIAdapter(BaseLLMAdapter):
@@ -379,6 +497,86 @@ class GrokAdapter(BaseLLMAdapter):
         except Exception as e:
             logging.error(f"Grok API 调用失败: {e}")
             return ""
+
+def set_manual_proxy(http_proxy: str, https_proxy: str = None):
+    """
+    手动设置代理
+    
+    Args:
+        http_proxy: HTTP代理地址，例如: "http://127.0.0.1:7890" 或 "socks5://127.0.0.1:7891"
+        https_proxy: HTTPS代理地址，如果不提供则使用与http_proxy相同的值
+    """
+    if https_proxy is None:
+        https_proxy = http_proxy
+    
+    os.environ['HTTP_PROXY'] = http_proxy
+    os.environ['HTTPS_PROXY'] = https_proxy
+    os.environ['http_proxy'] = http_proxy  # 小写版本
+    os.environ['https_proxy'] = https_proxy
+    
+    logging.info(f"手动设置代理: HTTP={http_proxy}, HTTPS={https_proxy}")
+    
+    # 测试连接
+    if test_google_connectivity():
+        logging.info("✅ 代理设置成功，可以访问Google服务")
+        return True
+    else:
+        logging.warning("⚠️ 代理设置后仍无法访问Google服务")
+        return False
+
+def clear_proxy():
+    """
+    清除代理设置
+    """
+    proxy_vars = ['HTTP_PROXY', 'HTTPS_PROXY', 'http_proxy', 'https_proxy']
+    for var in proxy_vars:
+        if var in os.environ:
+            del os.environ[var]
+    logging.info("已清除代理设置")
+
+def test_gemini_connection(api_key: str):
+    """
+    测试Gemini API连接
+    
+    Args:
+        api_key: Gemini API密钥
+        
+    Returns:
+        bool: 连接是否成功
+    """
+    try:
+        logging.info("🧪 正在测试Gemini API连接...")
+        
+        # 先测试网络连接
+        if not test_google_connectivity():
+            logging.warning("❌ 无法访问Google服务，请检查网络连接或代理设置")
+            return False
+            
+        # 尝试创建一个简单的API调用
+        genai.configure(api_key=api_key)
+        model = genai.GenerativeModel('gemini-pro')
+        response = model.generate_content("Hello")
+        
+        if response and response.text:
+            logging.info("✅ Gemini API连接成功！")
+            return True
+        else:
+            logging.warning("⚠️ Gemini API响应为空")
+            return False
+            
+    except Exception as e:
+        logging.error(f"❌ Gemini API连接失败: {e}")
+        
+        # 提供一些解决建议
+        if "API_KEY" in str(e).upper():
+            logging.info("💡 请检查API密钥是否正确")
+        elif any(keyword in str(e).lower() for keyword in ['connection', 'timeout', 'network']):
+            logging.info("💡 网络连接问题，建议:")
+            logging.info("   1. 确保Clash等代理正常运行")
+            logging.info("   2. 尝试运行: set_manual_proxy('http://127.0.0.1:7890')")
+            logging.info("   3. 检查防火墙设置")
+        
+        return False
 
 def create_llm_adapter(
     interface_format: str,
