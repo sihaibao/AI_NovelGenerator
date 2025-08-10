@@ -223,6 +223,36 @@ class NovelGeneratorGUI:
         selected_dir = filedialog.askdirectory()
         if selected_dir:
             self.filepath_var.set(selected_dir)
+    
+    def auto_detect_project_path(self):
+        """自动检测项目路径"""
+        from ui.chapters_tab import detect_project_root
+        
+        project_root = detect_project_root()
+        if project_root:
+            self.filepath_var.set(project_root)
+            self.safe_log(f"✅ 已自动检测并设置项目路径: {project_root}")
+            
+            # 检查是否存在chapters文件夹
+            chapters_dir = os.path.join(project_root, "chapters")
+            if os.path.exists(chapters_dir):
+                self.safe_log("📁 已找到现有的 chapters 文件夹")
+            else:
+                self.safe_log("📁 将在此路径下创建 chapters 文件夹")
+                
+            messagebox.showinfo("成功", f"已自动设置项目路径:\n{project_root}")
+        else:
+            current_dir = os.getcwd()
+            self.safe_log(f"❌ 无法自动检测项目路径")
+            self.safe_log(f"💡 当前工作目录: {current_dir}")
+            messagebox.showwarning("提示", 
+                "无法自动检测项目路径\n\n" +
+                "可能的原因:\n" +
+                "1. 当前不在项目目录中运行\n" +
+                "2. 项目文件结构不完整\n\n" +
+                f"当前目录: {current_dir}\n\n" +
+                "请手动选择项目根目录（包含main.py的文件夹）"
+            )
 
     def show_character_import_window(self):
         """显示角色导入窗口"""

@@ -48,6 +48,9 @@ def build_novel_params_area(self, start_row=1):
     filepath_entry.grid(row=0, column=0, padx=5, pady=5, sticky="ew")
     browse_btn = ctk.CTkButton(self.filepath_frame, text="浏览...", command=self.browse_folder, width=60, font=("Microsoft YaHei", 12))
     browse_btn.grid(row=0, column=1, padx=5, pady=5, sticky="e")
+    
+    auto_detect_btn = ctk.CTkButton(self.filepath_frame, text="自动检测", command=self.auto_detect_project_path, width=80, font=("Microsoft YaHei", 12))
+    auto_detect_btn.grid(row=0, column=2, padx=5, pady=5, sticky="e")
 
     # 5) 章节号
     row_chap_num = 4

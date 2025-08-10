@@ -6,6 +6,65 @@ from tkinter import messagebox
 from ui.context_menu import TextWidgetContextMenu
 from utils import read_file, save_string_to_txt, clear_file_content
 
+def detect_project_root():
+    """
+    自动检测项目根目录
+    通过查找特定的标识文件来确定项目根目录
+    """
+    current_dir = os.getcwd()
+    
+    # 项目标识文件列表
+    project_markers = [
+        'main.py',
+        'requirements.txt', 
+        'README.md',
+        'novel_generator',  # 文件夹
+        'ui',               # 文件夹
+        'config_manager.py',
+        'llm_adapters.py'
+    ]
+    
+    # 检查当前目录
+    def check_directory(path):
+        """检查目录是否包含项目标识文件"""
+        score = 0
+        for marker in project_markers:
+            marker_path = os.path.join(path, marker)
+            if os.path.exists(marker_path):
+                score += 1
+        return score
+    
+    # 检查当前目录及其父目录
+    max_score = 0
+    best_path = None
+    search_path = current_dir
+    
+    # 最多向上查找5级目录
+    for _ in range(5):
+        score = check_directory(search_path)
+        if score > max_score:
+            max_score = score
+            best_path = search_path
+        
+        # 如果找到足够多的标识文件，认为找到了项目根目录
+        if score >= 3:
+            break
+            
+        parent = os.path.dirname(search_path)
+        if parent == search_path:  # 已到达根目录
+            break
+        search_path = parent
+    
+    # 如果找到的路径包含chapters文件夹，则认为是正确的项目根目录
+    if best_path and os.path.exists(os.path.join(best_path, 'chapters')):
+        return best_path
+    
+    # 如果当前目录就有chapters文件夹，直接返回当前目录
+    if os.path.exists(os.path.join(current_dir, 'chapters')):
+        return current_dir
+        
+    return best_path if max_score >= 2 else None
+
 def build_chapters_tab(self):
     self.chapters_view_tab = self.tabview.add("Chapters Manage")
     self.chapters_view_tab.rowconfigure(0, weight=0)
@@ -56,11 +115,35 @@ def build_chapters_tab(self):
 
 def refresh_chapters_list(self):
     filepath = self.filepath_var.get().strip()
+    
+    # 如果路径为空，尝试自动检测项目根目录
+    if not filepath:
+        current_dir = os.getcwd()
+        project_root = detect_project_root()
+        if project_root:
+            self.safe_log(f"⚠️ 未设置保存路径，已自动检测到项目根目录: {project_root}")
+            self.safe_log("💡 建议在 '小说参数配置' 标签页中设置正确的保存路径")
+            self.filepath_var.set(project_root)
+            filepath = project_root
+        else:
+            self.safe_log("❌ 未设置保存路径且无法自动检测项目目录")
+            self.safe_log("📋 请在 '小说参数配置' 标签页中设置保存路径")
+            self.safe_log(f"💡 当前工作目录: {current_dir}")
+            self.chapter_select_menu.configure(values=[])
+            return
+    
     chapters_dir = os.path.join(filepath, "chapters")
+    
+    # 如果chapters文件夹不存在，尝试创建它
     if not os.path.exists(chapters_dir):
-        self.safe_log("尚未找到 chapters 文件夹，请先生成章节或检查保存路径。")
-        self.chapter_select_menu.configure(values=[])
-        return
+        try:
+            os.makedirs(chapters_dir, exist_ok=True)
+            self.safe_log(f"📁 已创建 chapters 文件夹: {chapters_dir}")
+        except Exception as e:
+            self.safe_log(f"❌ 无法创建 chapters 文件夹: {e}")
+            self.safe_log("📋 请检查保存路径是否正确，或手动创建 chapters 文件夹")
+            self.chapter_select_menu.configure(values=[])
+            return
 
     all_files = os.listdir(chapters_dir)
     chapter_nums = []
