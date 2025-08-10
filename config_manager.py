@@ -31,6 +31,10 @@ def test_llm_config(interface_format, api_key, base_url, model_name, temperature
     def task():
         try:
             log_func("开始测试LLM配置...")
+            log_func(f"📋 配置参数: interface_format={interface_format}, model_name={model_name}, base_url={base_url}")
+            log_func(f"📋 其他参数: temperature={temperature}, max_tokens={max_tokens}, timeout={timeout}")
+            
+            log_func("🔧 正在创建LLM适配器...")
             llm_adapter = create_llm_adapter(
                 interface_format=interface_format,
                 base_url=base_url,
@@ -40,9 +44,15 @@ def test_llm_config(interface_format, api_key, base_url, model_name, temperature
                 max_tokens=max_tokens,
                 timeout=timeout
             )
+            log_func("✅ LLM适配器创建成功")
 
             test_prompt = "Please reply 'OK'"
+            log_func(f"📤 发送测试请求: {test_prompt}")
+            log_func("⏳ 正在等待API响应...")
+            
             response = llm_adapter.invoke(test_prompt)
+            
+            log_func("📥 收到API响应")
             if response:
                 log_func("✅ LLM配置测试成功！")
                 log_func(f"测试回复: {response}")
@@ -50,6 +60,8 @@ def test_llm_config(interface_format, api_key, base_url, model_name, temperature
                 log_func("❌ LLM配置测试失败：未获取到响应")
         except Exception as e:
             log_func(f"❌ LLM配置测试出错: {str(e)}")
+            import traceback
+            log_func(f"详细错误信息: {traceback.format_exc()}")
             handle_exception_func("测试LLM配置时出错")
 
     threading.Thread(target=task, daemon=True).start()
